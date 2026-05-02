@@ -60,10 +60,30 @@ def analyze_ticker(ticker):
     impure_rev = (interest_income / revenue) * 100 if revenue else np.nan
 
     # ---------- Compliance logic ----------
-    aaoifi_spot = debt_spot_mc < 30 and impure_rev < 5
-    aaoifi_avg = debt_avg_mc < 30 and impure_rev < 5
-    msci_asset = debt_assets < 33 and impure_rev < 5
-    consensus = "✅ COMPLIANT" if (aaoifi_avg and msci_asset) else "❌ NON‑COMPLIANT"
+    def eval_ratio(val, limit):
+        if pd.isna(val):
+            return None
+        return val < limit
+    
+    spot_ok = eval_ratio(debt_spot_mc, 30) and eval_ratio(impure_rev, 5)
+    avg_ok = eval_ratio(debt_avg_mc, 30) and eval_ratio(impure_rev, 5)
+    msci_ok = eval_ratio(debt_assets, 33) and eval_ratio(impure_rev, 5)
+    
+    def format_result(ok, val):
+        if ok is None:
+            return "⚠️ Data unavailable"
+        return f"{'✅' if ok else '❌'} ({val:.1f}%)"
+    
+    aaoifi_spot_disp = format_result(spot_ok, debt_spot_mc)
+    aaoifi_avg_disp = format_result(avg_ok, debt_avg_mc)
+    msci_disp = format_result(msci_ok, debt_assets)
+    
+    if spot_ok is True and avg_ok is True and msci_ok is True:
+        consensus = "✅ COMPLIANT"
+    elif spot_ok is False or avg_ok is False or msci_ok is False:
+        consensus = "❌ NON‑COMPLIANT"
+    else:
+        consensus = "⚠️ INCONCLUSIVE"
 
     # ---------- Price & trend ----------
     current_price = info.get("currentPrice", np.nan)
@@ -101,9 +121,9 @@ def analyze_ticker(ticker):
     return {
         "Ticker": ticker,
         "Company Name": info.get("longName", "Unknown"),
-        "AAOIFI (Spot)": f"{'✅' if aaoifi_spot else '❌'} ({debt_spot_mc:.1f}%)",
-        "AAOIFI (24m Avg)": f"{'✅' if aaoifi_avg else '❌'} ({debt_avg_mc:.1f}%)",
-        "MSCI (Asset)": f"{'✅' if msci_asset else '❌'} ({debt_assets:.1f}%)",
+        "AAOIFI (Spot)": aaoifi_spot_disp,
+        "AAOIFI (24m Avg)": aaoifi_avg_disp,
+        "MSCI (Asset)": msci_disp,
         "Impure Revenue %": round(impure_rev, 1),
         "Consensus": consensus,
         "Current Price": round(current_price, 2),
