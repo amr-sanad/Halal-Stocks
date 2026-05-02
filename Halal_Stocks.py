@@ -63,35 +63,46 @@ def analyze_ticker(ticker):
         assets = first_existing(bs, ["Total Assets"])
         debt = first_existing(bs, ["Total Debt", "Long Term Debt", "Total Liab"])
         revenue = first_existing(is_stmt, ["Total Revenue", "Revenue"])
-        interest = first_existing(is_stmt, ["Interest Income", "Interest and Investment Income"])
+        interest = first_existing(
+            is_stmt,
+            ["Interest Income", "Interest and Investment Income"]
+        )
 
+        # Tesla-style reporting: interest not explicit → assume 0
         if pd.notna(revenue) and pd.isna(interest):
-            interest = 0.0  # Tesla-style
+            interest = 0.0
 
         return info, assets, debt, revenue, interest
 
-    # Try primary ticker
+    # ---- Primary ticker ----
     stock = yf.Ticker(ticker)
     info, assets, debt, revenue, interest = extract(stock)
     used_adr = False
 
-    # ADR fallback if core fields missing
+    # ---- ADR fallback if core data missing ----
     if pd.isna(assets) or pd.isna(revenue):
         adr = ADR_MAP.get(ticker)
         if adr:
             adr_stock = yf.Ticker(adr)
             info_adr, assets_adr, debt_adr, revenue_adr, interest_adr = extract(adr_stock)
+
             if pd.notna(assets_adr) and pd.notna(revenue_adr):
-                assets, debt, revenue, interest = assets_adr, debt_adr, revenue_adr, interest_adr
+                assets, debt, revenue, interest = (
+                    assets_adr, debt_adr, revenue_adr, interest_adr
+                )
                 used_adr = True
 
-    # Market caps
+    # ---- Market caps ----
     spot_mcap = info.get("marketCap", np.nan)
     hist = stock.history(period="2y", interval="1mo")
     shares = info.get("sharesOutstanding", np.nan)
-    avg_mcap = hist["Close"].mean() * shares if not hist.empty and pd.notna(shares) else np.nan
+    avg_mcap = (
+        hist["Close"].mean() * shares
+        if not hist.empty and pd.notna(shares)
+        else np.nan
+    )
 
-    # Ratios
+    # ---- Ratios ----
     debt_assets = safe_ratio(debt, assets)
     debt_spot = safe_ratio(debt, spot_mcap)
     debt_avg = safe_ratio(debt, avg_mcap)
@@ -132,7 +143,8 @@ def analyze_ticker(ticker):
 # RUN
 # --------------------------------------------------
 if st.button("Run Full Analysis"):
-    df = pd.DataFrame([analyze_ticker(t) for t in tickers])
+    results = [analyze_ticker(t) for t in tickers]
+    df = pd.DataFrame(results)
     st.dataframe(df, use_container_width=True)
     df.to_excel("latest_results.xlsx", index=False)
     st.success("✅ Analysis completed")
@@ -150,4 +162,3 @@ st.markdown(
     "</small>",
     unsafe_allow_html=True
 )
-``
