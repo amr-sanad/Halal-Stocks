@@ -56,50 +56,48 @@ def safe_ratio(num, den):
 # ANALYSIS FUNCTION
 # --------------------------------------------------
 def analyze_ticker(ticker):
-    stock = yf.Ticker(ticker)
+    def extract_core(stock_obj):
+        info = stock_obj.info
+        bs = stock_obj.balance_sheet
+        is_stmt = stock_obj.financials
 
-    # Try local ticker first
-    info = stock.info
-    bs = stock.balance_sheet
-    is_stmt = stock.financials
+        assets = first_existing(bs, ["Total Assets"])
+        debt = first_existing(bs, ["Total Debt", "Long Term Debt", "Total Liab"])
+        revenue = first_existing(is_stmt, ["Total Revenue", "Revenue"])
+
+        # Interest income is OPTIONAL (Tesla-style companies)
+        interest = first_existing(
+            is_stmt,
+            ["Interest Income", "Interest and Investment Income"]
+        )
+
+        # If revenue exists but interest is missing → assume 0
+        if pd.notna(revenue) and pd.isna(interest):
+            interest = 0.0
+
+        return info, assets, debt, revenue, interest, stock_obj
+
+    # ---- First try: given ticker ----
+    stock = yf.Ticker(ticker)
+    info, assets, debt, revenue, interest, used_stock = extract_core(stock)
 
     used_adr = False
 
-    # If balance sheet incomplete, try ADR (Option B)
-    if bs.empty or is_stmt.empty:
+    # ---- ADR fallback if CORE fields missing ----
+    if pd.isna(assets) or pd.isna(revenue):
         adr = ADR_MAP.get(ticker)
         if adr and adr != ticker:
-            stock = yf.Ticker(adr)
-            info = info  # keep local info (price, name)
-            bs = stock.balance_sheet
-            is_stmt = stock.financials
-            used_adr = True
+            stock_adr = yf.Ticker(adr)
+            info_adr, assets_adr, debt_adr, revenue_adr, interest_adr, _ = extract_core(stock_adr)
 
-    # ---------- Extract financials (Option A) ----------
-    assets = first_existing(bs, [
-        "Total Assets",
-        "Total Assets (Annual)"
-    ])
+            if pd.notna(assets_adr) and pd.notna(revenue_adr):
+                assets, debt, revenue, interest = (
+                    assets_adr, debt_adr, revenue_adr, interest_adr
+                )
+                used_adr = True
 
-    debt = first_existing(bs, [
-        "Total Debt",
-        "Long Term Debt",
-        "Total Liab"
-    ])
-
-    revenue = first_existing(is_stmt, [
-        "Total Revenue",
-        "Revenue"
-    ])
-
-    interest_income = first_existing(is_stmt, [
-        "Interest Income",
-        "Interest and Investment Income"
-    ])
-
-    # ---------- Market caps ----------
+    # ---- Market caps ----
     spot_mcap = info.get("marketCap", np.nan)
-
     hist_mc = stock.history(period="2y", interval="1mo")
     shares = info.get("sharesOutstanding", np.nan)
     avg_mcap = (
@@ -108,39 +106,44 @@ def analyze_ticker(ticker):
         else np.nan
     )
 
-    # ---------- Ratios ----------
+    # ---- Ratios ----
     debt_assets = safe_ratio(debt, assets)
     debt_spot_mc = safe_ratio(debt, spot_mcap)
     debt_avg_mc = safe_ratio(debt, avg_mcap)
-    impure_rev = safe_ratio(interest_income, revenue)
+    impure_rev = safe_ratio(interest, revenue)
 
-    # ---------- Rule evaluation ----------
     def check(val, limit):
-        if pd.isna(val):
-            return None
-        return val < limit
+        return None if pd.isna(val) else val < limit
 
     spot_ok = check(debt_spot_mc, 30) and check(impure_rev, 5)
     avg_ok = check(debt_avg_mc, 30) and check(impure_rev, 5)
     msci_ok = check(debt_assets, 33) and check(impure_rev, 5)
 
-    def display(ok, val):
+    def disp(ok, val):
         if ok is None:
             return "⚠️ Data unavailable"
         return f"{'✅' if ok else '❌'} ({val:.1f}%)"
 
-    aaoifi_spot = display(spot_ok, debt_spot_mc)
-    aaoifi_avg = display(avg_ok, debt_avg_mc)
-    msci_disp = display(msci_ok, debt_assets)
-
-    # ---------- Consensus logic (fixed) ----------
-    results = [spot_ok, avg_ok, msci_ok]
-    if any(r is False for r in results):
+    # ---- Consensus ----
+    evaluations = [spot_ok, avg_ok, msci_ok]
+    if any(v is False for v in evaluations):
         consensus = "❌ NON‑COMPLIANT"
-    elif any(r is True for r in results):
+    elif any(v is True for v in evaluations):
         consensus = "✅ COMPLIANT"
     else:
         consensus = "⚠️ INCONCLUSIVE"
+
+    return {
+        "Ticker": ticker,
+        "Company Name": info.get("longName", "Unknown"),
+        "AAOIFI (Spot)": disp(spot_ok, debt_spot_mc),
+        "AAOIFI (24m Avg)": disp(avg_ok, debt_avg_mc),
+        "MSCI (Asset)": disp(msci_ok, debt_assets),
+        "Impure Revenue %": None if pd.isna(impure_rev) else round(impure_rev, 1),
+        "Consensus": consensus,
+        "ADR Used for Ratios": "Yes" if used_adr else "No",
+        "Current Price": round(info.get("currentPrice", np.nan), 2),
+    }
 
     # ---------- Decision indicators ----------
     current_price = info.get("currentPrice", np.nan)
