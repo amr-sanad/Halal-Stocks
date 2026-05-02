@@ -1,4 +1,6 @@
 streamlit
 yfinance
+finnhub-python
 pandas
 numpy
+openpyxl
