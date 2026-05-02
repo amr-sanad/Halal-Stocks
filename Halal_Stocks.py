@@ -26,7 +26,7 @@ portfolio_df = pd.read_excel("portfolio.xlsx")
 tickers = portfolio_df["Ticker"].dropna().str.upper().tolist()
 
 # --------------------------------------------------
-# ADR MAP
+# ADR MAP (FIXED & COMPLETE)
 # --------------------------------------------------
 ADR_MAP = {
     "IFX.DE": "IFNNY",
@@ -34,6 +34,11 @@ ADR_MAP = {
     "SAP.DE": "SAP",
     "SIE.DE": "SIEGY",
     "BAYN.DE": "BAYRY",
+    "LONN.SW": "LZAGY",
+    "HOLN.SW": "HCMLY",
+    "ENGI.PA": "ENGIY",
+    "SAN.PA": "SNY",
+    "ADS.DE": "ADDYY",
 }
 
 # --------------------------------------------------
@@ -68,18 +73,18 @@ def analyze_ticker(ticker):
             ["Interest Income", "Interest and Investment Income"]
         )
 
-        # Tesla-style reporting: interest not explicit → assume 0
+        # Tesla-style: revenue exists but interest not explicit
         if pd.notna(revenue) and pd.isna(interest):
             interest = 0.0
 
         return info, assets, debt, revenue, interest
 
-    # ---- Primary ticker ----
+    # ---------- primary ticker ----------
     stock = yf.Ticker(ticker)
     info, assets, debt, revenue, interest = extract(stock)
     used_adr = False
 
-    # ---- ADR fallback if core data missing ----
+    # ---------- ADR fallback ----------
     if pd.isna(assets) or pd.isna(revenue):
         adr = ADR_MAP.get(ticker)
         if adr:
@@ -92,17 +97,17 @@ def analyze_ticker(ticker):
                 )
                 used_adr = True
 
-    # ---- Market caps ----
+    # ---------- market caps ----------
     spot_mcap = info.get("marketCap", np.nan)
-    hist = stock.history(period="2y", interval="1mo")
+    hist_mc = stock.history(period="2y", interval="1mo")
     shares = info.get("sharesOutstanding", np.nan)
     avg_mcap = (
-        hist["Close"].mean() * shares
-        if not hist.empty and pd.notna(shares)
+        hist_mc["Close"].mean() * shares
+        if not hist_mc.empty and pd.notna(shares)
         else np.nan
     )
 
-    # ---- Ratios ----
+    # ---------- shariah ratios ----------
     debt_assets = safe_ratio(debt, assets)
     debt_spot = safe_ratio(debt, spot_mcap)
     debt_avg = safe_ratio(debt, avg_mcap)
@@ -127,6 +132,32 @@ def analyze_ticker(ticker):
     else:
         consensus = "⚠️ INCONCLUSIVE"
 
+    # ---------- decision indicators ----------
+    current_price = info.get("currentPrice", np.nan)
+    high_52w = info.get("fiftyTwoWeekHigh", np.nan)
+    low_52w = info.get("fiftyTwoWeekLow", np.nan)
+
+    upside_52w = (
+        (high_52w - current_price) / current_price * 100
+        if pd.notna(current_price) and pd.notna(high_52w)
+        else np.nan
+    )
+
+    hist = stock.history(period="1y")
+    ma_200 = hist["Close"].rolling(200).mean().iloc[-1] if len(hist) >= 200 else np.nan
+    above_200dma = current_price > ma_200 if pd.notna(ma_200) else False
+
+    forward_pe = info.get("forwardPE", np.nan)
+    peg = info.get("pegRatio", np.nan)
+    roe = info.get("returnOnEquity", np.nan)
+    roe_pct = roe * 100 if pd.notna(roe) else np.nan
+
+    buy_score = 0
+    buy_score += 1 if above_200dma else 0
+    buy_score += 1 if upside_52w and upside_52w > 15 else 0
+    buy_score += 1 if peg and peg < 1.5 else 0
+    buy_score += 1 if roe_pct and roe_pct > 10 else 0
+
     return {
         "Ticker": ticker,
         "Company Name": info.get("longName", "Unknown"),
@@ -135,16 +166,21 @@ def analyze_ticker(ticker):
         "MSCI (Asset)": disp(msci_ok, debt_assets),
         "Impure Revenue %": None if pd.isna(impure) else round(impure, 1),
         "Consensus": consensus,
+        "Current Price": round(current_price, 2),
+        "Upside to 52W High %": None if pd.isna(upside_52w) else round(upside_52w, 1),
+        "Above 200DMA": "✅" if above_200dma else "❌",
+        "Forward P/E": None if pd.isna(forward_pe) else round(forward_pe, 1),
+        "PEG": None if pd.isna(peg) else round(peg, 2),
+        "ROE %": None if pd.isna(roe_pct) else round(roe_pct, 1),
+        "Buy Score (0–4)": buy_score,
         "ADR Used for Ratios": "Yes" if used_adr else "No",
-        "Current Price": round(info.get("currentPrice", np.nan), 2),
     }
 
 # --------------------------------------------------
 # RUN
 # --------------------------------------------------
 if st.button("Run Full Analysis"):
-    results = [analyze_ticker(t) for t in tickers]
-    df = pd.DataFrame(results)
+    df = pd.DataFrame([analyze_ticker(t) for t in tickers])
     st.dataframe(df, use_container_width=True)
     df.to_excel("latest_results.xlsx", index=False)
     st.success("✅ Analysis completed")
