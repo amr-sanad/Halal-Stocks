@@ -22,7 +22,7 @@ st.info(
 # --------------------------------------------------
 # LOAD PORTFOLIO
 # --------------------------------------------------
-portfolio_df = pd.read_excel("portfolio.xlsx")
+portfolio_df = pd.read_csv("portfolio.csv")
 tickers = portfolio_df["Ticker"].dropna().str.upper().tolist()
 
 # --------------------------------------------------
