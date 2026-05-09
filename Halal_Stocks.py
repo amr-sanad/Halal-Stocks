@@ -69,14 +69,14 @@ def analyze_ticker(ticker):
             fast = stock.fast_info
         except:
             fast = {}
-
-        bs = stock.balance_sheet
-        is_stmt = stock.financials
 # ---- Company Name (safe fallback) ----
 try:
     company_name = stock.get_info().get("longName", ticker)
 except:
     company_name = ticker
+        bs = stock.balance_sheet
+        is_stmt = stock.financials
+
     
         # ---- Financials ----
         assets = first_existing(bs, ["Total Assets"])
