@@ -21,7 +21,7 @@ st.info(
 )
 
 # --------------------------------------------------
-# LOAD PORTFOLIO (CSV instead of Excel)
+# LOAD PORTFOLIO
 # --------------------------------------------------
 portfolio_df = pd.read_csv("portfolio.csv")
 tickers = portfolio_df["Ticker"].dropna().str.upper().tolist()
@@ -64,7 +64,7 @@ def analyze_ticker(ticker):
         stock = yf.Ticker(fundamental_ticker)
         price_stock = yf.Ticker(ticker)
 
-        # ✅ SAFE replacement for info
+        # ---- SAFE INFO ----
         try:
             fast = stock.fast_info
         except:
@@ -84,23 +84,31 @@ def analyze_ticker(ticker):
         if pd.notna(revenue) and pd.isna(interest):
             interest = 0.0
 
-        # ---- Market cap with fallback ----
-hist_price_short = price_stock.history(period="5d")
+        # ✅ ---- MARKET CAP FIX (critical) ----
+        hist_price_short = price_stock.history(period="5d")
 
-if not hist_price_short.empty:
-    last_price = hist_price_short["Close"].iloc[-1]
-else:
-    last_price = np.nan
+        if not hist_price_short.empty:
+            last_price = hist_price_short["Close"].iloc[-1]
+        else:
+            last_price = np.nan
 
-shares = fast.get("shares", np.nan)
+        shares = fast.get("shares", np.nan)
 
-if pd.notna(fast.get("market_cap")):
-    spot_mcap = fast.get("market_cap")
-elif pd.notna(last_price) and pd.notna(shares):
-    spot_mcap = last_price * shares
-else:
-    spot_mcap = np.nan
-    
+        if pd.notna(fast.get("market_cap")):
+            spot_mcap = fast.get("market_cap")
+        elif pd.notna(last_price) and pd.notna(shares):
+            spot_mcap = last_price * shares
+        else:
+            spot_mcap = np.nan
+
+        # ---- Avg Market Cap ----
+        hist_mc = stock.history(period="2y", interval="1mo")
+
+        avg_mcap = (
+            hist_mc["Close"].mean() * shares
+            if not hist_mc.empty and pd.notna(shares)
+            else np.nan
+        )
 
         # ---- Ratios ----
         debt_assets = safe_ratio(debt, assets)
@@ -128,7 +136,7 @@ else:
         else:
             consensus = "⚠️ INCONCLUSIVE"
 
-        # ---- Price (SAFE: from history only) ----
+        # ---- Price ----
         hist_price = price_stock.history(period="1y")
 
         if hist_price.empty:
@@ -147,7 +155,6 @@ else:
         ma_200 = hist_price["Close"].rolling(200).mean().iloc[-1] if len(hist_price) >= 200 else np.nan
         above_200dma = current_price > ma_200 if pd.notna(ma_200) else False
 
-        # ✅ SAFER: remove info-based ratios prone to failure
         peg = fast.get("peg_ratio", np.nan)
         roe = fast.get("return_on_equity", np.nan)
 
@@ -158,7 +165,7 @@ else:
             pd.notna(roe) and roe > 0.10
         ])
 
-        # ✅ Rate-limit protection
+        # ✅ Rate limit protection
         time.sleep(1)
 
         return {
@@ -222,4 +229,4 @@ st.markdown(
     "For personal and educational use only."
     "</small>",
     unsafe_allow_html=True
-)
+        )
