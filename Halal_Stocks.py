@@ -217,7 +217,7 @@ st.markdown(
     "</small>",
     unsafe_allow_html=True
 )
-    "ADS.DE": "ADDYY",
+    "ADS.DE": "ADDYY"
 }
 
 # --------------------------------------------------
