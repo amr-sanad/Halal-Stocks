@@ -84,17 +84,23 @@ def analyze_ticker(ticker):
         if pd.notna(revenue) and pd.isna(interest):
             interest = 0.0
 
-        # ---- Market caps ----
-        spot_mcap = fast.get("market_cap", np.nan)
+        # ---- Market cap with fallback ----
+hist_price_short = price_stock.history(period="5d")
 
-        hist_mc = stock.history(period="2y", interval="1mo")
-        shares = fast.get("shares", np.nan)
+if not hist_price_short.empty:
+    last_price = hist_price_short["Close"].iloc[-1]
+else:
+    last_price = np.nan
 
-        avg_mcap = (
-            hist_mc["Close"].mean() * shares
-            if not hist_mc.empty and pd.notna(shares)
-            else np.nan
-        )
+shares = fast.get("shares", np.nan)
+
+if pd.notna(fast.get("market_cap")):
+    spot_mcap = fast.get("market_cap")
+elif pd.notna(last_price) and pd.notna(shares):
+    spot_mcap = last_price * shares
+else:
+    spot_mcap = np.nan
+    
 
         # ---- Ratios ----
         debt_assets = safe_ratio(debt, assets)
