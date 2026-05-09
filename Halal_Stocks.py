@@ -69,15 +69,17 @@ def analyze_ticker(ticker):
             fast = stock.fast_info
         except:
             fast = {}
-# ---- Company Name (safe fallback) ----
-try:
-    company_name = stock.get_info().get("longName", ticker)
-except:
-    company_name = ticker
+
+        # ---- COMPANY NAME ----
+        try:
+            info = stock.get_info()
+            company_name = info.get("longName", ticker)
+        except:
+            company_name = ticker
+
         bs = stock.balance_sheet
         is_stmt = stock.financials
 
-    
         # ---- Financials ----
         assets = first_existing(bs, ["Total Assets"])
         debt = first_existing(bs, ["Total Debt", "Long Term Debt", "Total Liab"])
@@ -89,7 +91,7 @@ except:
         if pd.notna(revenue) and pd.isna(interest):
             interest = 0.0
 
-        # ✅ ---- MARKET CAP FIX (critical) ----
+        # ✅ ---- MARKET CAP FIX ----
         hist_price_short = price_stock.history(period="5d")
 
         if not hist_price_short.empty:
@@ -106,7 +108,7 @@ except:
         else:
             spot_mcap = np.nan
 
-        # ---- Avg Market Cap ----
+        # ---- Avg market cap ----
         hist_mc = stock.history(period="2y", interval="1mo")
 
         avg_mcap = (
