@@ -72,7 +72,12 @@ def analyze_ticker(ticker):
 
         bs = stock.balance_sheet
         is_stmt = stock.financials
-
+# ---- Company Name (safe fallback) ----
+try:
+    company_name = stock.get_info().get("longName", ticker)
+except:
+    company_name = ticker
+    
         # ---- Financials ----
         assets = first_existing(bs, ["Total Assets"])
         debt = first_existing(bs, ["Total Debt", "Long Term Debt", "Total Liab"])
@@ -170,7 +175,7 @@ def analyze_ticker(ticker):
 
         return {
             "Ticker": ticker,
-            "Company Name": ticker,
+            "Company Name": company_name,
             "AAOIFI (Spot)": disp(spot_ok, debt_spot),
             "AAOIFI (24m Avg)": disp(avg_ok, debt_avg),
             "MSCI (Asset)": disp(msci_ok, debt_assets),
