@@ -27,7 +27,7 @@ portfolio_df = pd.read_csv("portfolio.csv")
 tickers = portfolio_df["Ticker"].dropna().str.upper().tolist()
 
 # --------------------------------------------------
-# ADR MAP
+# ADR / GLOBAL MAP
 # --------------------------------------------------
 ADR_MAP = {
     "IFX.DE": "IFNNY",
@@ -42,9 +42,15 @@ ADR_MAP = {
 # HELPERS
 # --------------------------------------------------
 def first_existing(df, labels):
+    if df is None or df.empty:
+        return np.nan
     for lbl in labels:
         if lbl in df.index:
-            return df.loc[lbl].iloc[0]
+            try:
+                val = df.loc[lbl].iloc[0] if isinstance(df.loc[lbl], pd.Series) else df.loc[lbl]
+                return float(val)
+            except:
+                continue
     return np.nan
 
 def safe_ratio(num, den):
@@ -53,7 +59,7 @@ def safe_ratio(num, den):
     return (num / den) * 100
 
 # --------------------------------------------------
-# ANALYSIS
+# ANALYSIS ENGINE
 # --------------------------------------------------
 def analyze_ticker(ticker):
     try:
@@ -63,83 +69,85 @@ def analyze_ticker(ticker):
         stock = yf.Ticker(fundamental_ticker)
         price_stock = yf.Ticker(ticker)
 
-        # ---- SAFE INFO ----
+        # ---- FALLBACK-SAFE DICTIONARIES ----
+        info = {}
+        try:
+            info = stock.info
+        except:
+            pass
+
         try:
             fast = stock.fast_info
         except:
             fast = {}
 
-        # ---- COMPANY NAME ----
+        company_name = info.get("longName", ticker) if info else ticker
+
+        # ---- FINANCIAL STATEMENT EXTRACTION ----
+        bs = None
+        is_stmt = None
         try:
-            info = stock.get_info()
-            company_name = info.get("longName", ticker)
+            bs = stock.balance_sheet
+            is_stmt = stock.financials
         except:
-            company_name = ticker
+            pass
 
-        bs = stock.balance_sheet
-        is_stmt = stock.financials
-
-        # ---- Financials ----
         assets = first_existing(bs, ["Total Assets"])
-        debt = first_existing(bs, ["Total Debt", "Long Term Debt"]) # Excluded Total Liab to remove non-debt items
+        debt = first_existing(bs, ["Total Debt", "Long Term Debt"])
         revenue = first_existing(is_stmt, ["Total Revenue", "Revenue"])
-        interest = first_existing(
-            is_stmt, ["Interest Income", "Interest and Investment Income"]
-        )
+        interest = first_existing(is_stmt, ["Interest Income", "Interest and Investment Income"])
 
         if pd.notna(revenue) and pd.isna(interest):
             interest = 0.0
 
-        # ✅ OPTIMIZED HISTORICAL FETCH (Single combined request)
-        hist_price = price_stock.history(period="2y") # 2 years historical data
+        # ---- TIME-EFFICIENT HISTORICAL DATA FETCH ----
+        # Pull 3 years to ensure we have healthy mathematical rolling footprints for MSCI/DJ
+        hist_price = price_stock.history(period="3y")
         
         if not hist_price.empty:
             current_price = hist_price["Close"].iloc[-1]
             high_52w = hist_price["Close"].max()
             ma_200 = hist_price["Close"].rolling(200).mean().iloc[-1] if len(hist_price) >= 200 else np.nan
             
-            # 24-Month Monthly Average Calculation
-            hist_mc_monthly = hist_price.resample('ME').mean()
-            avg_price_2y = hist_mc_monthly["Close"].mean()
+            # Monthly structural grouping for rolling averages
+            monthly_data = hist_price.resample('ME').mean()
+            avg_price_34m = monthly_data["Close"].tail(36).mean() # MSCI denominator profile
+            avg_price_24m = monthly_data["Close"].tail(24).mean() # Dow Jones denominator profile
         else:
-            current_price = np.nan
-            high_52w = np.nan
-            ma_200 = np.nan
-            avg_price_2y = np.nan
+            # Cairo / EGX Market Fetch Fallbacks
+            current_price = info.get("previousClose", np.nan) if info else np.nan
+            high_52w = info.get("fiftyTwoWeekHigh", np.nan) if info else np.nan
+            ma_200 = info.get("twoHundredDayAverage", np.nan) if info else np.nan
+            avg_price_34m = current_price
+            avg_price_24m = current_price
 
+        # ---- CAIRO PROOF SHARES OUTSTANDING RECOVERY ----
         shares = fast.get("shares", np.nan)
+        if pd.isna(shares) and info:
+            shares = info.get("sharesOutstanding", np.nan)
 
-        # Spot Market Cap
-        if pd.notna(fast.get("market_cap")):
-            spot_mcap = fast.get("market_cap")
-        elif pd.notna(current_price) and pd.notna(shares):
-            spot_mcap = current_price * shares
-        else:
-            spot_mcap = np.nan
+        # Market Capitalization Scaling Calculations
+        mcap_36m_avg = avg_price_34m * shares if pd.notna(avg_price_34m) and pd.notna(shares) else np.nan
+        mcap_24m_avg = avg_price_24m * shares if pd.notna(avg_price_24m) and pd.notna(shares) else np.nan
 
-        # Avg market cap (24-Month Rolling)
-        avg_mcap = avg_price_2y * shares if pd.notna(avg_price_2y) and pd.notna(shares) else np.nan
-
-        # 🕋 CORRECTED SHARIAH RATIOS (Fixed Denominators)
-        debt_assets = safe_ratio(debt, assets)  # For AAOIFI Rule
-        debt_avg = safe_ratio(debt, avg_mcap)   # For MSCI Rule (Market Cap Avg)
-        debt_spot = safe_ratio(debt, spot_mcap) # For Dow Jones Rule (Spot/Current Cap)
+        # 🕋 FIXED FORMULA SCREENING MATRIX
+        debt_assets = safe_ratio(debt, assets)      # AAOIFI Metric
+        debt_msci = safe_ratio(debt, mcap_36m_avg)  # MSCI Metric (36-Month Rolling)
+        debt_dj = safe_ratio(debt, mcap_24m_avg)    # Dow Jones Metric (24-Month Rolling)
         impure = safe_ratio(interest, revenue)
 
         def check(val, limit):
             return True if pd.notna(val) and val < limit else False if pd.notna(val) else None
 
-        # Framework Evaluators
-        aaoifi_ok = check(debt_assets, 30) and check(impure, 5) # Debt to Assets < 30%
-        msci_ok = check(debt_avg, 33) and check(impure, 5)     # Debt to 36m Avg Cap < 33%
-        dj_ok = check(debt_spot, 33) and check(impure, 5)      # Debt to Spot Market Cap < 33%
+        aaoifi_ok = check(debt_assets, 30) and check(impure, 5)
+        msci_ok = check(debt_msci, 33) and check(impure, 5)
+        dj_ok = check(debt_dj, 33) and check(impure, 5)
 
         def disp(ok, val):
             if ok is None:
-                return "⚠️ Data unavailable"
+                return "⚠️ Data incomplete"
             return f"{'✅' if ok else '❌'} ({val:.1f}%)"
 
-        # Consensus tracking across all 3 rulesets
         checks = [aaoifi_ok, msci_ok, dj_ok]
         if any(v is False for v in checks if v is not None):
             consensus = "❌ NON‑COMPLIANT"
@@ -148,17 +156,16 @@ def analyze_ticker(ticker):
         else:
             consensus = "⚠️ INCONCLUSIVE"
 
-        # ---- Calculations ----
+        # ---- BUY SIGNAL ARITHMETIC ----
         upside_52w = (
             (high_52w - current_price) / current_price * 100
-            if pd.notna(current_price) and current_price > 0
+            if pd.notna(current_price) and pd.notna(high_52w) and current_price > 0
             else np.nan
         )
 
         above_200dma = current_price > ma_200 if pd.notna(ma_200) and pd.notna(current_price) else False
-
-        peg = fast.get("peg_ratio", np.nan)
-        roe = fast.get("return_on_equity", np.nan)
+        peg = info.get("pegRatio", np.nan) if info else np.nan
+        roe = info.get("returnOnEquity", np.nan) if info else np.nan
 
         buy_score = sum([
             above_200dma,
@@ -167,64 +174,52 @@ def analyze_ticker(ticker):
             pd.notna(roe) and roe > 0.10
         ])
 
-        # ✅ Minimum pause time (100ms) to bypass Yahoo constraints while maxing speed
+        # ✅ MINIMUM EXTREME PAUSE (100ms prevents blacklisting while processing lists fast)
         time.sleep(0.1)
 
         return {
             "Ticker": ticker,
             "Company Name": company_name,
             "AAOIFI (Asset)": disp(aaoifi_ok, debt_assets),
-            "MSCI (Avg Cap)": disp(msci_ok, debt_avg),
-            "Dow Jones (Spot Cap)": disp(dj_ok, debt_spot),
+            "MSCI (36m Avg Cap)": disp(msci_ok, debt_msci),
+            "Dow Jones (24m Avg Cap)": disp(dj_ok, debt_dj),
             "Impure Revenue %": None if pd.isna(impure) else round(impure, 1),
             "Consensus": consensus,
             "Current Price": round(current_price, 2) if pd.notna(current_price) else None,
             "Upside to 52W High %": None if pd.isna(upside_52w) else round(upside_52w, 1),
             "Above 200DMA": "✅" if above_200dma else "❌",
             "Buy Score (0–4)": int(buy_score),
-            "ADR Used for Ratios": "Yes" if uses_adr else "No",
+            "Currency": info.get("currency", "Unknown") if info else "Unknown",
         }
 
     except Exception as e:
         return {
             "Ticker": ticker,
-            "Company Name": "ERROR",
-            "AAOIFI (Asset)": "❌",
-            "MSCI (Avg Cap)": "❌",
-            "Dow Jones (Spot Cap)": "❌",
+            "Company Name": "DATA RECOVERY ERROR",
+            "AAOIFI (Asset)": "⚠️",
+            "MSCI (36m Avg Cap)": "⚠️",
+            "Dow Jones (24m Avg Cap)": "⚠️",
             "Impure Revenue %": None,
             "Consensus": "❌ ERROR",
             "Current Price": None,
             "Upside to 52W High %": None,
             "Above 200DMA": "❌",
             "Buy Score (0–4)": 0,
-            "ADR Used for Ratios": "No",
+            "Currency": "Error",
         }
 
 # --------------------------------------------------
-# RUN
+# EXECUTIVE LOOP
 # --------------------------------------------------
 if st.button("Run Full Analysis"):
     results = []
 
     for t in tickers:
-        st.write(f"Processing {t}...")
+        st.write(f"Analyzing ticker tracking logs for: {t}...")
         results.append(analyze_ticker(t))
 
     df = pd.DataFrame(results)
     st.dataframe(df, use_container_width=True)
     df.to_csv("latest_results.csv", index=False)
-    st.success("✅ Analysis completed")
-
-# --------------------------------------------------
-# FOOTER
-# --------------------------------------------------
-st.markdown("<hr>", unsafe_allow_html=True)
-st.markdown(
-    "<small>"
-    "ADR financials are used when mapped. "
-    "Market data © Yahoo Finance (via yfinance). "
-    "For personal and educational use only."
-    "</small>",
-    unsafe_allow_html=True
-)
+    st.success("✅ Analysis completed successfully")
+        
