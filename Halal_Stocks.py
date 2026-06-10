@@ -241,3 +241,4 @@ if st.button("Run Full Analysis"):
     st.dataframe(df, use_container_width=True)
     df.to_csv("latest_results.csv", index=False)
     st.success("✅ Analysis processing complete.")
+        
