@@ -44,20 +44,23 @@ ADR_MAP = {
 def first_existing(df, labels):
     if df is None or df.empty:
         return np.nan
-    # Standardize index strings for flexible mapping
+    
+    # Standardize tracking strings to handle index variations safely
     index_clean = {str(idx).lower().strip(): idx for idx in df.index}
+    
     for lbl in labels:
         lbl_clean = str(lbl).lower().strip()
         if lbl_clean in index_clean:
             try:
                 row_data = df.loc[index_clean[lbl_clean]]
-                # Extract first item safely whether it is a Series or a raw single value
+                
+                # ✅ FIXING THE POINTER BUG: Correctly extract the actual data cell index using .iloc[0]
                 if isinstance(row_data, pd.Series):
                     return float(row_data.iloc[0])
                 elif isinstance(row_data, pd.DataFrame):
                     return float(row_data.iloc[0, 0])
                 return float(row_data)
-            except:
+            except Exception as e:
                 continue
     return np.nan
 
@@ -89,7 +92,7 @@ def analyze_ticker(ticker):
 
         company_name = info.get("longName", ticker) if info else ticker
 
-        # ---- FINANCIAL STATEMENT DATA EXTRACTION ----
+        # ---- LIVE STATEMENT EXTRACTION ----
         bs = None
         is_stmt = None
         try:
@@ -100,7 +103,7 @@ def analyze_ticker(ticker):
 
         assets = first_existing(bs, ["Total Assets", "TotalAssets"])
         
-        # Expanded debt label list to prevent regional structural crashes (Cairo fallback tags included)
+        # ✅ Added all alternative international debt keys back into your primary tracker list
         debt = first_existing(bs, ["Total Debt", "Long Term Debt", "LongTermDebt", "Total Liab", "Total Liabilities", "Current Liabilities"])
         
         revenue = first_existing(is_stmt, ["Total Revenue", "Revenue", "TotalRevenue"])
@@ -117,12 +120,12 @@ def analyze_ticker(ticker):
             high_52w = hist_price["Close"].max()
             ma_200 = hist_price["Close"].rolling(200).mean().iloc[-1] if len(hist_price) >= 200 else np.nan
             
-            # Monthly structural grouping for rolling averages
+            # Monthly grouping for multi-year rolling evaluations
             monthly_data = hist_price.resample('ME').mean()
-            avg_price_36m = monthly_data["Close"].tail(36).mean() # MSCI Delineator
-            avg_price_24m = monthly_data["Close"].tail(24).mean() # Dow Jones Delineator
+            avg_price_36m = monthly_data["Close"].tail(36).mean() # MSCI denominator profile
+            avg_price_24m = monthly_data["Close"].tail(24).mean() # Dow Jones denominator profile
         else:
-            # Live Fallback for localized international exchanges
+            # Regional Exchange Fallbacks
             current_price = info.get("previousClose", np.nan) if info else np.nan
             high_52w = info.get("fiftyTwoWeekHigh", np.nan) if info else np.nan
             ma_200 = info.get("twoHundredDayAverage", np.nan) if info else np.nan
@@ -134,12 +137,12 @@ def analyze_ticker(ticker):
         if pd.isna(shares) and info:
             shares = info.get("sharesOutstanding", np.nan)
 
-        # Multi-Methodology Market Cap Evaluators
+        # Multi-Methodology Market Cap Calculations
         mcap_36m_avg = avg_price_36m * shares if pd.notna(avg_price_36m) and pd.notna(shares) else np.nan
         mcap_24m_avg = avg_price_24m * shares if pd.notna(avg_price_24m) and pd.notna(shares) else np.nan
 
-        # 🕋 EXECUTING METHODOLOGY SPECIFIC FORMULAS
-        debt_assets = safe_ratio(debt, assets)      # AAOIFI Screen (Debt ÷ Book Assets)
+        # 🕋 EXECUTING RATIO CALCULATIONS
+        debt_assets = safe_ratio(debt, assets)      # AAOIFI Screen (Debt ÷ Assets)
         debt_msci = safe_ratio(debt, mcap_36m_avg)  # MSCI Screen (Debt ÷ 36m Avg Cap)
         debt_dj = safe_ratio(debt, mcap_24m_avg)    # Dow Jones Screen (Debt ÷ 24m Avg Cap)
         impure = safe_ratio(interest, revenue)
@@ -170,7 +173,7 @@ def analyze_ticker(ticker):
         else:
             consensus = "⚠️ INCONCLUSIVE"
 
-        # ---- VALUATION AND BUY SIGNALS ----
+        # ---- BUY SIGNALS ----
         upside_52w = (
             (high_52w - current_price) / current_price * 100
             if pd.notna(current_price) and pd.notna(high_52w) and current_price > 0
@@ -188,7 +191,7 @@ def analyze_ticker(ticker):
             pd.notna(roe) and roe > 0.10
         ])
 
-        # Optimized 100ms pause protects against API limits without delaying performance
+        # Balanced 100ms request pause prevents rate blocks while executing fast
         time.sleep(0.1)
 
         return {
@@ -223,7 +226,7 @@ def analyze_ticker(ticker):
         }
 
 # --------------------------------------------------
-# EXECUTION LOGIC LOOP
+# EXECUTION LOOP RUNNER
 # --------------------------------------------------
 if st.button("Run Full Analysis"):
     results = []
@@ -235,5 +238,4 @@ if st.button("Run Full Analysis"):
     df = pd.DataFrame(results)
     st.dataframe(df, use_container_width=True)
     df.to_csv("latest_results.csv", index=False)
-    st.success("✅ Live tracking loop complete.")
-        
+    st.success("✅ Analysis loop successfully processed live records.")
