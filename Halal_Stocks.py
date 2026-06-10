@@ -27,7 +27,7 @@ portfolio_df = pd.read_csv("portfolio.csv")
 tickers = portfolio_df["Ticker"].dropna().str.upper().tolist()
 
 # --------------------------------------------------
-# ADR / GLOBAL MAP
+# GLOBAL MARKET / ADR SYNCHRONIZATION MAP
 # --------------------------------------------------
 ADR_MAP = {
     "IFX.DE": "IFNNY",
@@ -39,27 +39,39 @@ ADR_MAP = {
 }
 
 # --------------------------------------------------
-# HELPERS
+# ERROR-PROOF FINANCIAL EXTRACTION HELPERS
 # --------------------------------------------------
-def first_existing(df, labels):
-    if df is None or df.empty:
-        return np.nan
-    for lbl in labels:
-        if lbl in df.index:
-            try:
-                val = df.loc[lbl].iloc[0] if isinstance(df.loc[lbl], pd.Series) else df.loc[lbl]
-                return float(val)
-            except:
-                continue
+def extract_metric(df, alternative_dict, target_keys):
+    """Robust extraction tracking both traditional multi-index frames and raw fallbacks."""
+    if df is not None and not df.empty:
+        for key in target_keys:
+            # Flatten potential index strings to match structural variations
+            match = [idx for idx in df.index if key.lower() == str(idx).lower().strip()]
+            if match:
+                try:
+                    row_data = df.loc[match[0]]
+                    val = row_data.iloc[0] if isinstance(row_data, pd.Series) else row_data
+                    if pd.notna(val):
+                        return float(val)
+                except:
+                    continue
+                    
+    # Secondary recovery loop via raw ticker structural info dictionary (Crucial for Egyptian Tickers)
+    if alternative_dict:
+        for key in target_keys:
+            for alt_key, alt_val in alternative_dict.items():
+                if key.lower() in alt_key.lower():
+                    if isinstance(alt_val, (int, float)) and pd.notna(alt_val):
+                        return float(alt_val)
     return np.nan
 
 def safe_ratio(num, den):
-    if pd.isna(num) or pd.isna(den) or den == 0:
+    if pd.isna(num) or pd.isna(den) or den <= 0:
         return np.nan
     return (num / den) * 100
 
 # --------------------------------------------------
-# ANALYSIS ENGINE
+# QUANT ANALYSIS SCREENING ENGINE
 # --------------------------------------------------
 def analyze_ticker(ticker):
     try:
@@ -69,7 +81,7 @@ def analyze_ticker(ticker):
         stock = yf.Ticker(fundamental_ticker)
         price_stock = yf.Ticker(ticker)
 
-        # ---- FALLBACK-SAFE DICTIONARIES ----
+        # ---- STABLE FUNDAMENTALS DICTIONARY FALLBACKS ----
         info = {}
         try:
             info = stock.info
@@ -83,7 +95,7 @@ def analyze_ticker(ticker):
 
         company_name = info.get("longName", ticker) if info else ticker
 
-        # ---- FINANCIAL STATEMENT EXTRACTION ----
+        # ---- ADVANCED STATEMENT MAP EXTRACTION ----
         bs = None
         is_stmt = None
         try:
@@ -92,16 +104,16 @@ def analyze_ticker(ticker):
         except:
             pass
 
-        assets = first_existing(bs, ["Total Assets"])
-        debt = first_existing(bs, ["Total Debt", "Long Term Debt"])
-        revenue = first_existing(is_stmt, ["Total Revenue", "Revenue"])
-        interest = first_existing(is_stmt, ["Interest Income", "Interest and Investment Income"])
+        # Pull values across broad variations commonly found in global accounting disclosures
+        assets = extract_metric(bs, info, ["Total Assets", "TotalAssets"])
+        debt = extract_metric(bs, info, ["Total Debt", "LongTermDebt", "Long Term Debt"])
+        revenue = extract_metric(is_stmt, info, ["Total Revenue", "Revenue", "TotalRevenue"])
+        interest = extract_metric(is_stmt, info, ["Interest Income", "InterestIncome", "Interest and Investment Income"])
 
         if pd.notna(revenue) and pd.isna(interest):
             interest = 0.0
 
-        # ---- TIME-EFFICIENT HISTORICAL DATA FETCH ----
-        # Pull 3 years to ensure we have healthy mathematical rolling footprints for MSCI/DJ
+        # ---- UNIFORM TIME PROFILE HISTORICAL PRICES ----
         hist_price = price_stock.history(period="3y")
         
         if not hist_price.empty:
@@ -109,35 +121,37 @@ def analyze_ticker(ticker):
             high_52w = hist_price["Close"].max()
             ma_200 = hist_price["Close"].rolling(200).mean().iloc[-1] if len(hist_price) >= 200 else np.nan
             
-            # Monthly structural grouping for rolling averages
+            # Form monthly windows for accurate historical capitalization paths
             monthly_data = hist_price.resample('ME').mean()
-            avg_price_34m = monthly_data["Close"].tail(36).mean() # MSCI denominator profile
-            avg_price_24m = monthly_data["Close"].tail(24).mean() # Dow Jones denominator profile
+            avg_price_36m = monthly_data["Close"].tail(36).mean()
+            avg_price_24m = monthly_data["Close"].tail(24).mean()
         else:
-            # Cairo / EGX Market Fetch Fallbacks
+            # Local Market Fallbacks for Data Recovery
             current_price = info.get("previousClose", np.nan) if info else np.nan
             high_52w = info.get("fiftyTwoWeekHigh", np.nan) if info else np.nan
             ma_200 = info.get("twoHundredDayAverage", np.nan) if info else np.nan
-            avg_price_34m = current_price
+            avg_price_36m = current_price
             avg_price_24m = current_price
 
-        # ---- CAIRO PROOF SHARES OUTSTANDING RECOVERY ----
+        # Recover historical outstanding shares securely across all regional markets
         shares = fast.get("shares", np.nan)
         if pd.isna(shares) and info:
             shares = info.get("sharesOutstanding", np.nan)
 
-        # Market Capitalization Scaling Calculations
-        mcap_36m_avg = avg_price_34m * shares if pd.notna(avg_price_34m) and pd.notna(shares) else np.nan
+        # Multi-Methodology Market Cap Evaluators
+        mcap_36m_avg = avg_price_36m * shares if pd.notna(avg_price_36m) and pd.notna(shares) else np.nan
         mcap_24m_avg = avg_price_24m * shares if pd.notna(avg_price_24m) and pd.notna(shares) else np.nan
 
-        # 🕋 FIXED FORMULA SCREENING MATRIX
-        debt_assets = safe_ratio(debt, assets)      # AAOIFI Metric
-        debt_msci = safe_ratio(debt, mcap_36m_avg)  # MSCI Metric (36-Month Rolling)
-        debt_dj = safe_ratio(debt, mcap_24m_avg)    # Dow Jones Metric (24-Month Rolling)
+        # 🕋 EXECUTING CALCULATED METRICS
+        debt_assets = safe_ratio(debt, assets)      # AAOIFI Screen
+        debt_msci = safe_ratio(debt, mcap_36m_avg)  # MSCI 36m Avg Cap Screen
+        debt_dj = safe_ratio(debt, mcap_24m_avg)    # Dow Jones 24m Avg Cap Screen
         impure = safe_ratio(interest, revenue)
 
         def check(val, limit):
-            return True if pd.notna(val) and val < limit else False if pd.notna(val) else None
+            if pd.isna(val): 
+                return None
+            return val < limit
 
         aaoifi_ok = check(debt_assets, 30) and check(impure, 5)
         msci_ok = check(debt_msci, 33) and check(impure, 5)
@@ -148,15 +162,20 @@ def analyze_ticker(ticker):
                 return "⚠️ Data incomplete"
             return f"{'✅' if ok else '❌'} ({val:.1f}%)"
 
+        # ---- STRICT CONSENSUS VALIDATOR LOGIC ----
         checks = [aaoifi_ok, msci_ok, dj_ok]
+        
+        # If all valid data rows pass
         if any(v is False for v in checks if v is not None):
             consensus = "❌ NON‑COMPLIANT"
-        elif all(v is True for v in checks if v is not None):
+        elif all(v is True for v in checks) and len(checks) == 3:
             consensus = "✅ UNIVERSALLY COMPLIANT"
+        elif any(v is True for v in checks) and any(v is None for v in checks):
+            consensus = "⚠️ PARTIALLY COMPLIANT (Data missing in some screens)"
         else:
             consensus = "⚠️ INCONCLUSIVE"
 
-        # ---- BUY SIGNAL ARITHMETIC ----
+        # ---- VALUATION AND TRACKING INDICATORS ----
         upside_52w = (
             (high_52w - current_price) / current_price * 100
             if pd.notna(current_price) and pd.notna(high_52w) and current_price > 0
@@ -174,7 +193,7 @@ def analyze_ticker(ticker):
             pd.notna(roe) and roe > 0.10
         ])
 
-        # ✅ MINIMUM EXTREME PAUSE (100ms prevents blacklisting while processing lists fast)
+        # Rate Limiting Protection Pause
         time.sleep(0.1)
 
         return {
@@ -196,9 +215,9 @@ def analyze_ticker(ticker):
         return {
             "Ticker": ticker,
             "Company Name": "DATA RECOVERY ERROR",
-            "AAOIFI (Asset)": "⚠️",
-            "MSCI (36m Avg Cap)": "⚠️",
-            "Dow Jones (24m Avg Cap)": "⚠️",
+            "AAOIFI (Asset)": "⚠️ Data missing",
+            "MSCI (36m Avg Cap)": "⚠️ Data missing",
+            "Dow Jones (24m Avg Cap)": "⚠️ Data missing",
             "Impure Revenue %": None,
             "Consensus": "❌ ERROR",
             "Current Price": None,
@@ -209,17 +228,16 @@ def analyze_ticker(ticker):
         }
 
 # --------------------------------------------------
-# EXECUTIVE LOOP
+# EXECUTION LOGIC LOOP
 # --------------------------------------------------
 if st.button("Run Full Analysis"):
     results = []
 
     for t in tickers:
-        st.write(f"Analyzing ticker tracking logs for: {t}...")
+        st.write(f"Evaluating fundamental balance sheet tracking blocks for: {t}...")
         results.append(analyze_ticker(t))
 
     df = pd.DataFrame(results)
     st.dataframe(df, use_container_width=True)
     df.to_csv("latest_results.csv", index=False)
-    st.success("✅ Analysis completed successfully")
-        
+    st.success("✅ Analysis processing complete.")
