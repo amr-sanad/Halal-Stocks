@@ -56,7 +56,6 @@ def safe_ratio(num, den):
 # ANALYSIS
 # --------------------------------------------------
 def analyze_ticker(ticker):
-
     try:
         fundamental_ticker = ADR_MAP.get(ticker, ticker)
         uses_adr = fundamental_ticker != ticker
@@ -82,7 +81,7 @@ def analyze_ticker(ticker):
 
         # ---- Financials ----
         assets = first_existing(bs, ["Total Assets"])
-        debt = first_existing(bs, ["Total Debt", "Long Term Debt", "Total Liab"])
+        debt = first_existing(bs, ["Total Debt", "Long Term Debt"]) # Excluded Total Liab to remove non-debt items
         revenue = first_existing(is_stmt, ["Total Revenue", "Revenue"])
         interest = first_existing(
             is_stmt, ["Interest Income", "Interest and Investment Income"]
@@ -91,76 +90,72 @@ def analyze_ticker(ticker):
         if pd.notna(revenue) and pd.isna(interest):
             interest = 0.0
 
-        # ✅ ---- MARKET CAP FIX ----
-        hist_price_short = price_stock.history(period="5d")
-
-        if not hist_price_short.empty:
-            last_price = hist_price_short["Close"].iloc[-1]
+        # ✅ OPTIMIZED HISTORICAL FETCH (Single combined request)
+        hist_price = price_stock.history(period="2y") # 2 years historical data
+        
+        if not hist_price.empty:
+            current_price = hist_price["Close"].iloc[-1]
+            high_52w = hist_price["Close"].max()
+            ma_200 = hist_price["Close"].rolling(200).mean().iloc[-1] if len(hist_price) >= 200 else np.nan
+            
+            # 24-Month Monthly Average Calculation
+            hist_mc_monthly = hist_price.resample('ME').mean()
+            avg_price_2y = hist_mc_monthly["Close"].mean()
         else:
-            last_price = np.nan
+            current_price = np.nan
+            high_52w = np.nan
+            ma_200 = np.nan
+            avg_price_2y = np.nan
 
         shares = fast.get("shares", np.nan)
 
+        # Spot Market Cap
         if pd.notna(fast.get("market_cap")):
             spot_mcap = fast.get("market_cap")
-        elif pd.notna(last_price) and pd.notna(shares):
-            spot_mcap = last_price * shares
+        elif pd.notna(current_price) and pd.notna(shares):
+            spot_mcap = current_price * shares
         else:
             spot_mcap = np.nan
 
-        # ---- Avg market cap ----
-        hist_mc = stock.history(period="2y", interval="1mo")
+        # Avg market cap (24-Month Rolling)
+        avg_mcap = avg_price_2y * shares if pd.notna(avg_price_2y) and pd.notna(shares) else np.nan
 
-        avg_mcap = (
-            hist_mc["Close"].mean() * shares
-            if not hist_mc.empty and pd.notna(shares)
-            else np.nan
-        )
-
-        # ---- Ratios ----
-        debt_assets = safe_ratio(debt, assets)
-        debt_spot = safe_ratio(debt, spot_mcap)
-        debt_avg = safe_ratio(debt, avg_mcap)
+        # 🕋 CORRECTED SHARIAH RATIOS (Fixed Denominators)
+        debt_assets = safe_ratio(debt, assets)  # For AAOIFI Rule
+        debt_avg = safe_ratio(debt, avg_mcap)   # For MSCI Rule (Market Cap Avg)
+        debt_spot = safe_ratio(debt, spot_mcap) # For Dow Jones Rule (Spot/Current Cap)
         impure = safe_ratio(interest, revenue)
 
         def check(val, limit):
             return True if pd.notna(val) and val < limit else False if pd.notna(val) else None
 
-        spot_ok = check(debt_spot, 30) and check(impure, 5)
-        avg_ok = check(debt_avg, 30) and check(impure, 5)
-        msci_ok = check(debt_assets, 33) and check(impure, 5)
+        # Framework Evaluators
+        aaoifi_ok = check(debt_assets, 30) and check(impure, 5) # Debt to Assets < 30%
+        msci_ok = check(debt_avg, 33) and check(impure, 5)     # Debt to 36m Avg Cap < 33%
+        dj_ok = check(debt_spot, 33) and check(impure, 5)      # Debt to Spot Market Cap < 33%
 
         def disp(ok, val):
             if ok is None:
                 return "⚠️ Data unavailable"
             return f"{'✅' if ok else '❌'} ({val:.1f}%)"
 
-        checks = [spot_ok, avg_ok, msci_ok]
+        # Consensus tracking across all 3 rulesets
+        checks = [aaoifi_ok, msci_ok, dj_ok]
         if any(v is False for v in checks if v is not None):
             consensus = "❌ NON‑COMPLIANT"
-        elif any(v is True for v in checks):
-            consensus = "✅ COMPLIANT"
+        elif all(v is True for v in checks if v is not None):
+            consensus = "✅ UNIVERSALLY COMPLIANT"
         else:
             consensus = "⚠️ INCONCLUSIVE"
 
-        # ---- Price ----
-        hist_price = price_stock.history(period="1y")
-
-        if hist_price.empty:
-            current_price = np.nan
-            high_52w = np.nan
-        else:
-            current_price = hist_price["Close"].iloc[-1]
-            high_52w = hist_price["Close"].max()
-
+        # ---- Calculations ----
         upside_52w = (
             (high_52w - current_price) / current_price * 100
-            if pd.notna(current_price)
+            if pd.notna(current_price) and current_price > 0
             else np.nan
         )
 
-        ma_200 = hist_price["Close"].rolling(200).mean().iloc[-1] if len(hist_price) >= 200 else np.nan
-        above_200dma = current_price > ma_200 if pd.notna(ma_200) else False
+        above_200dma = current_price > ma_200 if pd.notna(ma_200) and pd.notna(current_price) else False
 
         peg = fast.get("peg_ratio", np.nan)
         roe = fast.get("return_on_equity", np.nan)
@@ -172,15 +167,15 @@ def analyze_ticker(ticker):
             pd.notna(roe) and roe > 0.10
         ])
 
-        # ✅ Rate limit protection
-        time.sleep(1)
+        # ✅ Minimum pause time (100ms) to bypass Yahoo constraints while maxing speed
+        time.sleep(0.1)
 
         return {
             "Ticker": ticker,
             "Company Name": company_name,
-            "AAOIFI (Spot)": disp(spot_ok, debt_spot),
-            "AAOIFI (24m Avg)": disp(avg_ok, debt_avg),
-            "MSCI (Asset)": disp(msci_ok, debt_assets),
+            "AAOIFI (Asset)": disp(aaoifi_ok, debt_assets),
+            "MSCI (Avg Cap)": disp(msci_ok, debt_avg),
+            "Dow Jones (Spot Cap)": disp(dj_ok, debt_spot),
             "Impure Revenue %": None if pd.isna(impure) else round(impure, 1),
             "Consensus": consensus,
             "Current Price": round(current_price, 2) if pd.notna(current_price) else None,
@@ -194,9 +189,9 @@ def analyze_ticker(ticker):
         return {
             "Ticker": ticker,
             "Company Name": "ERROR",
-            "AAOIFI (Spot)": "❌",
-            "AAOIFI (24m Avg)": "❌",
-            "MSCI (Asset)": "❌",
+            "AAOIFI (Asset)": "❌",
+            "MSCI (Avg Cap)": "❌",
+            "Dow Jones (Spot Cap)": "❌",
             "Impure Revenue %": None,
             "Consensus": "❌ ERROR",
             "Current Price": None,
@@ -210,7 +205,6 @@ def analyze_ticker(ticker):
 # RUN
 # --------------------------------------------------
 if st.button("Run Full Analysis"):
-
     results = []
 
     for t in tickers:
@@ -218,11 +212,8 @@ if st.button("Run Full Analysis"):
         results.append(analyze_ticker(t))
 
     df = pd.DataFrame(results)
-
     st.dataframe(df, use_container_width=True)
-
     df.to_csv("latest_results.csv", index=False)
-
     st.success("✅ Analysis completed")
 
 # --------------------------------------------------
@@ -236,4 +227,4 @@ st.markdown(
     "For personal and educational use only."
     "</small>",
     unsafe_allow_html=True
-        )
+)
