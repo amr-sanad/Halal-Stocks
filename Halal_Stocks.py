@@ -17,7 +17,7 @@ st.title("🕋 Consensus Shariah Screening & Decision Tool")
 st.info(
     "Informational and research use only. "
     "Not financial, investment, or religious advice. "
-    "Data sourced from Yahoo Finance via yfinance."
+    "Data sourced live from Yahoo Finance via yfinance."
 )
 
 # --------------------------------------------------
@@ -27,7 +27,7 @@ portfolio_df = pd.read_csv("portfolio.csv")
 tickers = portfolio_df["Ticker"].dropna().str.upper().tolist()
 
 # --------------------------------------------------
-# GLOBAL MARKET / ADR SYNCHRONIZATION MAP
+# ADR / GLOBAL MAP
 # --------------------------------------------------
 ADR_MAP = {
     "IFX.DE": "IFNNY",
@@ -39,30 +39,26 @@ ADR_MAP = {
 }
 
 # --------------------------------------------------
-# ERROR-PROOF FINANCIAL EXTRACTION HELPERS
+# HELPERS
 # --------------------------------------------------
-def extract_metric(df, alternative_dict, target_keys):
-    """Robust extraction tracking both traditional multi-index frames and raw fallbacks."""
-    if df is not None and not df.empty:
-        for key in target_keys:
-            # Flatten potential index strings to match structural variations
-            match = [idx for idx in df.index if key.lower() == str(idx).lower().strip()]
-            if match:
-                try:
-                    row_data = df.loc[match[0]]
-                    val = row_data.iloc[0] if isinstance(row_data, pd.Series) else row_data
-                    if pd.notna(val):
-                        return float(val)
-                except:
-                    continue
-                    
-    # Secondary recovery loop via raw ticker structural info dictionary (Crucial for Egyptian Tickers)
-    if alternative_dict:
-        for key in target_keys:
-            for alt_key, alt_val in alternative_dict.items():
-                if key.lower() in alt_key.lower():
-                    if isinstance(alt_val, (int, float)) and pd.notna(alt_val):
-                        return float(alt_val)
+def first_existing(df, labels):
+    if df is None or df.empty:
+        return np.nan
+    # Standardize index strings for flexible mapping
+    index_clean = {str(idx).lower().strip(): idx for idx in df.index}
+    for lbl in labels:
+        lbl_clean = str(lbl).lower().strip()
+        if lbl_clean in index_clean:
+            try:
+                row_data = df.loc[index_clean[lbl_clean]]
+                # Extract first item safely whether it is a Series or a raw single value
+                if isinstance(row_data, pd.Series):
+                    return float(row_data.iloc[0])
+                elif isinstance(row_data, pd.DataFrame):
+                    return float(row_data.iloc[0, 0])
+                return float(row_data)
+            except:
+                continue
     return np.nan
 
 def safe_ratio(num, den):
@@ -71,17 +67,15 @@ def safe_ratio(num, den):
     return (num / den) * 100
 
 # --------------------------------------------------
-# QUANT ANALYSIS SCREENING ENGINE
+# ANALYSIS ENGINE
 # --------------------------------------------------
 def analyze_ticker(ticker):
     try:
         fundamental_ticker = ADR_MAP.get(ticker, ticker)
-        uses_adr = fundamental_ticker != ticker
-
         stock = yf.Ticker(fundamental_ticker)
         price_stock = yf.Ticker(ticker)
 
-        # ---- STABLE FUNDAMENTALS DICTIONARY FALLBACKS ----
+        # ---- SECURE INFO DICTIONARIES ----
         info = {}
         try:
             info = stock.info
@@ -95,7 +89,7 @@ def analyze_ticker(ticker):
 
         company_name = info.get("longName", ticker) if info else ticker
 
-        # ---- ADVANCED STATEMENT MAP EXTRACTION ----
+        # ---- FINANCIAL STATEMENT DATA EXTRACTION ----
         bs = None
         is_stmt = None
         try:
@@ -104,11 +98,13 @@ def analyze_ticker(ticker):
         except:
             pass
 
-        # Pull values across broad variations commonly found in global accounting disclosures
-        assets = extract_metric(bs, info, ["Total Assets", "TotalAssets"])
-        debt = extract_metric(bs, info, ["Total Debt", "LongTermDebt", "Long Term Debt"])
-        revenue = extract_metric(is_stmt, info, ["Total Revenue", "Revenue", "TotalRevenue"])
-        interest = extract_metric(is_stmt, info, ["Interest Income", "InterestIncome", "Interest and Investment Income"])
+        assets = first_existing(bs, ["Total Assets", "TotalAssets"])
+        
+        # Expanded debt label list to prevent regional structural crashes (Cairo fallback tags included)
+        debt = first_existing(bs, ["Total Debt", "Long Term Debt", "LongTermDebt", "Total Liab", "Total Liabilities", "Current Liabilities"])
+        
+        revenue = first_existing(is_stmt, ["Total Revenue", "Revenue", "TotalRevenue"])
+        interest = first_existing(is_stmt, ["Interest Income", "InterestIncome", "Interest and Investment Income", "Net Interest Income"])
 
         if pd.notna(revenue) and pd.isna(interest):
             interest = 0.0
@@ -121,12 +117,12 @@ def analyze_ticker(ticker):
             high_52w = hist_price["Close"].max()
             ma_200 = hist_price["Close"].rolling(200).mean().iloc[-1] if len(hist_price) >= 200 else np.nan
             
-            # Form monthly windows for accurate historical capitalization paths
+            # Monthly structural grouping for rolling averages
             monthly_data = hist_price.resample('ME').mean()
-            avg_price_36m = monthly_data["Close"].tail(36).mean()
-            avg_price_24m = monthly_data["Close"].tail(24).mean()
+            avg_price_36m = monthly_data["Close"].tail(36).mean() # MSCI Delineator
+            avg_price_24m = monthly_data["Close"].tail(24).mean() # Dow Jones Delineator
         else:
-            # Local Market Fallbacks for Data Recovery
+            # Live Fallback for localized international exchanges
             current_price = info.get("previousClose", np.nan) if info else np.nan
             high_52w = info.get("fiftyTwoWeekHigh", np.nan) if info else np.nan
             ma_200 = info.get("twoHundredDayAverage", np.nan) if info else np.nan
@@ -142,10 +138,10 @@ def analyze_ticker(ticker):
         mcap_36m_avg = avg_price_36m * shares if pd.notna(avg_price_36m) and pd.notna(shares) else np.nan
         mcap_24m_avg = avg_price_24m * shares if pd.notna(avg_price_24m) and pd.notna(shares) else np.nan
 
-        # 🕋 EXECUTING CALCULATED METRICS
-        debt_assets = safe_ratio(debt, assets)      # AAOIFI Screen
-        debt_msci = safe_ratio(debt, mcap_36m_avg)  # MSCI 36m Avg Cap Screen
-        debt_dj = safe_ratio(debt, mcap_24m_avg)    # Dow Jones 24m Avg Cap Screen
+        # 🕋 EXECUTING METHODOLOGY SPECIFIC FORMULAS
+        debt_assets = safe_ratio(debt, assets)      # AAOIFI Screen (Debt ÷ Book Assets)
+        debt_msci = safe_ratio(debt, mcap_36m_avg)  # MSCI Screen (Debt ÷ 36m Avg Cap)
+        debt_dj = safe_ratio(debt, mcap_24m_avg)    # Dow Jones Screen (Debt ÷ 24m Avg Cap)
         impure = safe_ratio(interest, revenue)
 
         def check(val, limit):
@@ -165,17 +161,16 @@ def analyze_ticker(ticker):
         # ---- STRICT CONSENSUS VALIDATOR LOGIC ----
         checks = [aaoifi_ok, msci_ok, dj_ok]
         
-        # If all valid data rows pass
         if any(v is False for v in checks if v is not None):
             consensus = "❌ NON‑COMPLIANT"
-        elif all(v is True for v in checks) and len(checks) == 3:
+        elif all(v is True for v in checks):
             consensus = "✅ UNIVERSALLY COMPLIANT"
         elif any(v is True for v in checks) and any(v is None for v in checks):
             consensus = "⚠️ PARTIALLY COMPLIANT (Data missing in some screens)"
         else:
             consensus = "⚠️ INCONCLUSIVE"
 
-        # ---- VALUATION AND TRACKING INDICATORS ----
+        # ---- VALUATION AND BUY SIGNALS ----
         upside_52w = (
             (high_52w - current_price) / current_price * 100
             if pd.notna(current_price) and pd.notna(high_52w) and current_price > 0
@@ -193,7 +188,7 @@ def analyze_ticker(ticker):
             pd.notna(roe) and roe > 0.10
         ])
 
-        # Rate Limiting Protection Pause
+        # Optimized 100ms pause protects against API limits without delaying performance
         time.sleep(0.1)
 
         return {
@@ -214,7 +209,7 @@ def analyze_ticker(ticker):
     except Exception as e:
         return {
             "Ticker": ticker,
-            "Company Name": "DATA RECOVERY ERROR",
+            "Company Name": "CRITICAL ENGINE ERROR",
             "AAOIFI (Asset)": "⚠️ Data missing",
             "MSCI (36m Avg Cap)": "⚠️ Data missing",
             "Dow Jones (24m Avg Cap)": "⚠️ Data missing",
@@ -234,11 +229,11 @@ if st.button("Run Full Analysis"):
     results = []
 
     for t in tickers:
-        st.write(f"Evaluating fundamental balance sheet tracking blocks for: {t}...")
+        st.write(f"Scraping live tracking metrics for: {t}...")
         results.append(analyze_ticker(t))
 
     df = pd.DataFrame(results)
     st.dataframe(df, use_container_width=True)
     df.to_csv("latest_results.csv", index=False)
-    st.success("✅ Analysis processing complete.")
+    st.success("✅ Live tracking loop complete.")
         
