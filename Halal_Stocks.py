@@ -39,16 +39,16 @@ ADR_MAP = {
 }
 
 # --------------------------------------------------
-# HELPERS
+# REPAIRED & STABLE FINANCIAL HELPERS
 # --------------------------------------------------
 def first_existing(df, labels, info_dict=None, info_keys=None):
     """
-    Robust financial metric finder that flattens multi-index dataframes
-    and safely extracts numerical scalar data.
+    Robust financial extractor using the correct .iloc[0] syntax 
+    to prevent calculation engine logic crashes.
     """
     if df is not None and not df.empty:
         try:
-            # Flatten multi-tiered yfinance indexes to prevent multi-level matching errors
+            # Flatten multi-tiered yfinance index layouts if they exist
             if isinstance(df.index, pd.MultiIndex):
                 clean_index = [str(x).lower().strip() for x in df.index.get_level_values(0)]
             else:
@@ -61,16 +61,14 @@ def first_existing(df, labels, info_dict=None, info_keys=None):
                 if lbl_clean in index_map:
                     row_data = df.loc[index_map[lbl_clean]]
                     
-                    # ✅ FIX: Explicitly check lengths and extract using position bracket syntax [.iloc[0]]
-                    if isinstance(row_data, pd.DataFrame):
-                        return float(row_data.iloc[0, 0])
-                    elif isinstance(row_data, pd.Series):
+                    # ✅ FIXED REGRESSION: Restored the exact working numerical item selection syntax [.iloc[0]]
+                    if isinstance(row_data, (pd.Series, pd.DataFrame)):
                         return float(row_data.iloc[0])
                     return float(row_data)
-        except Exception as e:
-            pass # Keep searching other avenues if the dataframe index extraction encounters a hitch
+        except:
+            pass
 
-    # Secondary lookup vector via stock.info text keys (Crucial fallback layer for XOM/Cairo listings)
+    # Secondary text layout fallback search (Vital recovery step for XOM, KPTSF, and Cairo markets)
     if info_dict and info_keys:
         for k in info_keys:
             if k in info_dict and info_dict[k] is not None:
@@ -117,7 +115,7 @@ def analyze_ticker(ticker):
         except:
             pass
 
-        # Robust mapping queries parsing structural dataframes and text fallback keys simultaneously
+        # Parse metrics using multi-index tracking and direct data fallbacks simultaneously
         assets = first_existing(bs, ["Total Assets", "TotalAssets"], info, ["totalAssets"])
         
         debt = first_existing(bs, [
@@ -145,10 +143,10 @@ def analyze_ticker(ticker):
             
             # Form accurate historical rolling capitalization timelines
             monthly_data = hist_price.resample('ME').mean()
-            avg_price_36m = monthly_data["Close"].tail(36).mean()
-            avg_price_24m = monthly_data["Close"].tail(24).mean()
+            avg_price_36m = monthly_data["Close"].tail(36).mean()  # MSCI Delineator
+            avg_price_24m = monthly_data["Close"].tail(24).mean()  # Dow Jones Delineator
         else:
-            # Localized Regional Market Fallbacks
+            # Regional Exchange Fallbacks
             current_price = info.get("previousClose", np.nan) if info else np.nan
             high_52w = info.get("fiftyTwoWeekHigh", np.nan) if info else np.nan
             ma_200 = info.get("twoHundredDayAverage", np.nan) if info else np.nan
@@ -164,7 +162,7 @@ def analyze_ticker(ticker):
         mcap_36m_avg = avg_price_36m * shares if pd.notna(avg_price_36m) and pd.notna(shares) else np.nan
         mcap_24m_avg = avg_price_24m * shares if pd.notna(avg_price_24m) and pd.notna(shares) else np.nan
 
-        # 🕋 EXECUTING RATIO CALCULATIONS
+        # 🕋 EXECUTING METHODOLOGY SPECIFIC FORMULAS
         debt_assets = safe_ratio(debt, assets)      # AAOIFI Screen
         debt_msci = safe_ratio(debt, mcap_36m_avg)  # MSCI Screen
         debt_dj = safe_ratio(debt, mcap_24m_avg)    # Dow Jones Screen
@@ -232,7 +230,6 @@ def analyze_ticker(ticker):
         }
 
     except Exception as e:
-        print(f"Engine failure debug log on ticker {ticker}: {str(e)}")
         return {
             "Ticker": ticker,
             "Company Name": "CRITICAL ENGINE ERROR",
@@ -262,3 +259,4 @@ if st.button("Run Full Analysis"):
     st.dataframe(df, use_container_width=True)
     df.to_csv("latest_results.csv", index=False)
     st.success("✅ Live tracking loop complete.")
+    
