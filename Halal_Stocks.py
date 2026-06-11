@@ -41,30 +41,43 @@ ADR_MAP = {
 # --------------------------------------------------
 # HELPERS
 # --------------------------------------------------
-def first_existing(df, labels):
-    if df is None or df.empty:
-        return np.nan
-    
-    # Clean index strings to prevent case or spacing misses
-    index_clean = {str(idx).lower().strip(): idx for idx in df.index}
-    
-    for lbl in labels:
-        lbl_clean = str(lbl).lower().strip()
-        if lbl_clean in index_clean:
-            try:
-                row_data = df.loc[index_clean[lbl_clean]]
-                
-                # ✅ FIXED: Force absolute value extraction using .iloc[0] instead of abstract objects
-                if isinstance(row_data, pd.DataFrame):
-                    val = row_data.iloc[0, 0]
-                elif isinstance(row_data, pd.Series):
-                    val = row_data.iloc[0]
-                else:
-                    val = row_data
-                
-                return float(val)
-            except Exception as e:
-                continue
+def first_existing(df, labels, info_dict=None, info_keys=None):
+    """
+    Robust financial metric finder that flattens multi-index dataframes
+    and safely extracts numerical scalar data.
+    """
+    if df is not None and not df.empty:
+        try:
+            # Flatten multi-tiered yfinance indexes to prevent multi-level matching errors
+            if isinstance(df.index, pd.MultiIndex):
+                clean_index = [str(x).lower().strip() for x in df.index.get_level_values(0)]
+            else:
+                clean_index = [str(x).lower().strip() for x in df.index]
+
+            index_map = dict(zip(clean_index, df.index))
+
+            for lbl in labels:
+                lbl_clean = str(lbl).lower().strip()
+                if lbl_clean in index_map:
+                    row_data = df.loc[index_map[lbl_clean]]
+                    
+                    # ✅ FIX: Explicitly check lengths and extract using position bracket syntax [.iloc[0]]
+                    if isinstance(row_data, pd.DataFrame):
+                        return float(row_data.iloc[0, 0])
+                    elif isinstance(row_data, pd.Series):
+                        return float(row_data.iloc[0])
+                    return float(row_data)
+        except Exception as e:
+            pass # Keep searching other avenues if the dataframe index extraction encounters a hitch
+
+    # Secondary lookup vector via stock.info text keys (Crucial fallback layer for XOM/Cairo listings)
+    if info_dict and info_keys:
+        for k in info_keys:
+            if k in info_dict and info_dict[k] is not None:
+                try:
+                    return float(info_dict[k])
+                except:
+                    continue
     return np.nan
 
 def safe_ratio(num, den):
@@ -104,20 +117,20 @@ def analyze_ticker(ticker):
         except:
             pass
 
-        assets = first_existing(bs, ["Total Assets", "TotalAssets"])
+        # Robust mapping queries parsing structural dataframes and text fallback keys simultaneously
+        assets = first_existing(bs, ["Total Assets", "TotalAssets"], info, ["totalAssets"])
         
-        # Comprehensive global debt fallback mapping (captures international accounting variances)
         debt = first_existing(bs, [
-            "Total Debt", 
-            "Long Term Debt", 
-            "LongTermDebt", 
-            "Total Liabilities", 
-            "Total Liab", 
-            "Current Liabilities"
-        ])
+            "Total Debt", "Long Term Debt", "LongTermDebt", 
+            "Total Liabilities", "Total Liab", "Current Liabilities"
+        ], info, ["totalDebt", "totalLiabilities"])
         
-        revenue = first_existing(is_stmt, ["Total Revenue", "Revenue", "TotalRevenue"])
-        interest = first_existing(is_stmt, ["Interest Income", "InterestIncome", "Interest and Investment Income", "Net Interest Income"])
+        revenue = first_existing(is_stmt, ["Total Revenue", "Revenue", "TotalRevenue"], info, ["totalRevenue"])
+        
+        interest = first_existing(is_stmt, [
+            "Interest Income", "InterestIncome", 
+            "Interest and Investment Income", "Net Interest Income"
+        ], info, ["interestIncome"])
 
         if pd.notna(revenue) and pd.isna(interest):
             interest = 0.0
@@ -135,7 +148,7 @@ def analyze_ticker(ticker):
             avg_price_36m = monthly_data["Close"].tail(36).mean()
             avg_price_24m = monthly_data["Close"].tail(24).mean()
         else:
-            # Regional Exchange Fallbacks
+            # Localized Regional Market Fallbacks
             current_price = info.get("previousClose", np.nan) if info else np.nan
             high_52w = info.get("fiftyTwoWeekHigh", np.nan) if info else np.nan
             ma_200 = info.get("twoHundredDayAverage", np.nan) if info else np.nan
@@ -219,7 +232,6 @@ def analyze_ticker(ticker):
         }
 
     except Exception as e:
-        # Prints the specific error directly to your background terminal window for quick troubleshooting
         print(f"Engine failure debug log on ticker {ticker}: {str(e)}")
         return {
             "Ticker": ticker,
